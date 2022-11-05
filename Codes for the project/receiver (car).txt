@@ -1,0 +1,226 @@
+#include <LiquidCrystal_I2C.h>
+#include <RH_ASK.h> 
+#include <SPI.h>
+#include <SoftwareSerial.h>
+
+#define DEBUG 0
+
+SoftwareSerial ss(2,4);
+SoftwareSerial gsm(5,6);
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+RH_ASK driver;
+
+int speed_limit = 80, speed = 0,  current_speed = 0, counter = 0;
+const int wheels = 3, brake_lights = 7, buzzer = 8, alcohol_sensor = A3;
+unsigned long brake_t = 0, display_t = 0, counter_t = 0;
+String phone_no = "+255783147813";
+// String phone_no = "+255759499365";
+bool sms_was_sent = false, counter_activated = false;
+
+void truncate(String* str, int columns){
+  *str = str->substring(0, columns);
+}
+void print_lcd(String str, int row) {
+  static const int COLUMNS = 16;
+  if(str.length() > COLUMNS) truncate(&str,COLUMNS);
+  int pre_spaces = (COLUMNS - str.length()) / 2;
+  lcd.setCursor(0, row); lcd.print(String(' ', COLUMNS));
+  lcd.setCursor(pre_spaces, row); lcd.print(str);
+}
+void print_lcd(String str0, String str1) {
+  static const int COLUMNS = 16;
+  if(str0.length() > COLUMNS) truncate(&str0,COLUMNS);
+  if(str1.length() > COLUMNS) truncate(&str1,COLUMNS);
+  int pre_spaces0 = (COLUMNS - str0.length()) / 2;
+  int pre_spaces1 = (COLUMNS - str1.length()) / 2;
+  lcd.clear();
+  lcd.setCursor(pre_spaces0, 0); lcd.print(str0);
+  lcd.setCursor(pre_spaces1, 1); lcd.print(str1);
+}
+void default_lcd_text(){
+  print_lcd("RF car","speed control");
+}
+void configure_timer(){
+  uint16_t ocr = 2;
+  TCCR2A = 1 << COM2B1 | 1 << WGM21 | 1 << WGM20;
+  TCCR2B = 1 << CS22;
+  TCNT2 = 0;
+  OCR2B = ocr;
+}
+void change_ocr(int sp){
+  uint16_t ocr = 40;
+  if(sp == 0) ocr = 2;
+  else ocr += sp;
+  OCR2B = ocr;
+}
+bool alcohol_detected() {
+  if(!digitalRead(alcohol_sensor)) return true;
+  return false;
+}
+int receive_rf_data(){
+  int rf_limit = 0;
+  uint8_t buf[RH_ASK_MAX_MESSAGE_LEN];
+  uint8_t buflen = sizeof(buf);
+  unsigned long t = millis(), adjust_t = millis();
+  while(millis() - t < 1000){
+    if (driver.recv(buf, &buflen)) {
+      Serial.println("received data");
+      String str = "";
+      for(int i = 0; i < 2; i++) str += (char)buf[i];
+      rf_limit = str.toInt();
+      break;
+    }
+    if(millis() - adjust_t > 300){
+      // update_car_speed();
+      // adjust_car_speed();
+      // adjust_t = millis();
+    }
+  }
+  return rf_limit;
+}
+char receive_bt_data(){
+  if(ss.available()) return (char)(ss.read());
+  return '0';
+}
+void send_sms(String str) {  
+  gsm.listen();
+  gsm.println("AT+CMGF=1");
+  delay(1000);
+  gsm.println("AT+CMGS=\"" + phone_no + "\"\r");
+  delay(1000);
+  gsm.print(str);
+  gsm.println(char(26));
+  sms_was_sent = true;
+  ss.listen();
+}
+void brake_lights_on(){
+  digitalWrite(brake_lights,1);
+  brake_t = millis();
+}
+void brake_lights_off(){
+  digitalWrite(brake_lights,0);
+}
+void adjust_car_speed(){
+  if(speed < current_speed) brake_lights_on();
+  current_speed = speed;
+  change_ocr(speed);
+}
+void display_speed(){
+  print_lcd("limit " + (String)speed_limit, 
+            "speed " + (String)speed);
+  display_t = millis();
+}
+void beep_buzzer(int del) {
+  digitalWrite(buzzer, 1);
+  delay(del);
+  digitalWrite(buzzer,0);
+}
+void slow_stopping() {
+  print_lcd("too much","alcohol detected");
+  beep_buzzer(2000);
+  print_lcd("engaging","auto decelerate");
+  digitalWrite(brake_lights,1);
+  for(; speed >= 0; speed--) {
+    change_ocr(speed);
+    delay(100);
+  }
+  speed = 0;
+  brake_lights_off();
+  delay(1000);
+}
+void slow_deceleration() {
+  print_lcd("warning!","speed overlimit");
+  beep_buzzer(2000);
+  print_lcd("engaging","auto decelerate");
+  digitalWrite(brake_lights,1);
+  for(; speed >= speed_limit; speed--) {
+    change_ocr(speed);
+    delay(100);
+  }
+  speed = speed_limit;
+  current_speed = speed;
+  brake_lights_off();
+  delay(1000);
+}
+void update_speed_limit(){
+  int received_limit = receive_rf_data();
+  if(received_limit > 0) speed_limit = received_limit;
+}
+void update_car_speed(){
+  char c = receive_bt_data();
+  if(c == 'a'){
+    speed += 10;
+    if(speed > speed_limit) speed = speed_limit;
+  }
+  else if(c == 'd'){
+    speed -= 10;
+    if(speed < 0) speed = 0;
+  }
+}
+void setup(){
+  if(DEBUG) Serial.begin(115200);
+  ss.begin(9600);
+  gsm.begin(9600);
+  ss.listen();
+  lcd.init();
+  lcd.init();
+  lcd.backlight();
+  driver.init();
+  configure_timer();
+  pinMode(brake_lights,OUTPUT);
+  pinMode(wheels,OUTPUT);
+  pinMode(buzzer, OUTPUT);
+  pinMode(alcohol_sensor, INPUT);
+  // send_sms("this is text sms"); while(1);
+  default_lcd_text();
+  beep_buzzer(3000);
+  Serial.print(("ready"));
+}
+void loop(){
+  if(alcohol_detected()) {
+    if(speed > 0) slow_stopping();
+    else {
+      print_lcd("too much","alcohol");
+      beep_buzzer(500);
+      delay(1000);
+    }
+    if(!sms_was_sent) send_sms("driver with id: 01 has taken too much alcohol");
+    if(ss.available()) ss.readString();
+  }
+  else {
+    update_car_speed();
+    adjust_car_speed();
+    update_speed_limit();
+    if(speed > speed_limit) {
+      if(!counter_activated) {
+        counter_t = millis();
+        counter_activated = true;
+      }
+      else {
+        if(millis() - counter_t > 5000) {
+          slow_deceleration();
+          if(counter == 2) {
+            counter = 0;
+            print_lcd("sending over-","speed sms");
+            send_sms("driver with id: 01 has exceeded speed limit");;
+          }
+          else {
+            counter++;
+          }
+          counter_activated = false;
+        }
+      }
+    }
+    if(millis() - brake_t > 2000) brake_lights_off();
+    if(millis() - display_t > 1000) display_speed();
+    sms_was_sent = false;
+  }
+}
+/* if speed is above limit
+  dont change speed first instead give driver time to brake down (fixed time)
+  if driver didnt slow down after that time then count up and slow down the car BUT 
+  if he slowed down by himself reset it to 0
+  if counter == 3 report the incident and reset counter to 0
+
+*/

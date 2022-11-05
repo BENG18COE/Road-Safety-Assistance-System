@@ -1,0 +1,23 @@
+// #include <Arduino.h>
+// #include <RH_ASK.h>
+// #include <SPI.h>
+
+// RH_ASK rf_driver;
+// const int led = 7;
+
+// void blink_led(){
+//     digitalWrite(led,1);
+//     delay(50);
+//     digitalWrite(led,0);
+//     delay(250);
+// }
+// void setup() {
+//     rf_driver.init();
+//     pinMode(led,OUTPUT);
+// }
+// void loop() {
+//   const char *msg = "30";
+//   rf_driver.send((uint8_t *)msg, strlen(msg));
+//   rf_driver.waitPacketSent();
+//   blink_led();
+// }
